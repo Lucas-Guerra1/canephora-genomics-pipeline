@@ -1,0 +1,269 @@
+#!/bin/bash
+# =============================================================================
+# Coffee Genomics Pipeline — SNP Calling & Phylogenetic Analysis
+# Coffea canephora | M.Sc. Dissertation — UFLA, 2026
+# Author: Lucas Ribeiro de Souza Guerra
+# © 2026 All rights reserved.
+# =============================================================================
+# NOTE: Replace YOURFILE and YOURFILE2 with your actual sample names.
+# Third-party Perl scripts (TrimAdaptor.pl, Filter.pl, Compare.pl) must be
+# obtained from their original authors — see README.md for contact information.
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# STEP 1 — Adapter Trimming
+# Tool: TrimAdaptor.pl (Gong, 2012)
+# Removes Illumina sequencing adapters from paired-end FASTQ files.
+# Minimum read length after trimming: 40 bp
+# -----------------------------------------------------------------------------
+perl TrimAdaptor.pl \
+  -f1 YOURFILE.fastq_R1 \
+  -f2 YOURFILE.fastq_R2 \
+  -a1 AGATCGGAAGAGCAC \
+  -a2 AGATCGGAAGAGCGT \
+  -trim N -m 40 > counts.txt
+
+
+# -----------------------------------------------------------------------------
+# STEP 2 — Quality Filtering
+# Tool: Filter.pl (Guignon, CIRAD)
+# Filters reads by mean Phred quality >= 30 and minimum length >= 35 bp.
+# Applied independently to R1 and R2.
+# -----------------------------------------------------------------------------
+perl Filter.pl \
+  -f Clones/YOURFILE_no_adaptor_TGACCA_L001_R1_001.fastq \
+  -o Clones/Filtered-YOURFILE_no_adaptor_TGACCA_L001_R1_001.fastq
+
+perl Filter.pl \
+  -f Clones/YOURFILE_no_adaptor_TGACCA_L001_R2_001.fastq \
+  -o Clones/Filtered-YOURFILE_no_adaptor_TGACCA_L001_R2_001.fastq
+
+
+# -----------------------------------------------------------------------------
+# STEP 3 — Pair Adjustment
+# Tool: Compare.pl (Sabot, IRD)
+# Re-pairs R1 and R2 after quality filtering.
+# Unpaired reads are saved separately as single-end.
+# -----------------------------------------------------------------------------
+perl Compare.pl \
+  -f Clones/Filtered-YOURFILE_no_adaptor_TGACCA_L001_R1_001.fastq \
+  -r Clones/Filtered-YOURFILE_no_adaptor_TGACCA_L001_R2_001.fastq \
+  -of Clones/Paired_Filtered-YOURFILE_no_adaptor_TGACCA_L001_R1_001.fastq \
+  -or Clones/Paired_Filtered-YOURFILE_no_adaptor_TGACCA_L001_R2_001.fastq \
+  -os Clones/Single-Paired_Filtered-YOURFILE_no_adaptor_TGACCA_L001_R1_001
+
+
+# -----------------------------------------------------------------------------
+# STEP 4 — Reference Genome Indexing
+# Tool: BWA
+# Reference: CC1.8 (Salojarvi et al., 2024 — Nature Genetics)
+# Selected over CC Science (2014) based on higher properly-paired read rate
+# (84.89% vs 79.64%) and fewer secondary alignments.
+# -----------------------------------------------------------------------------
+bwa index CC1.8/CC1.8_v2_pseudomolecule_cat.fasta
+
+
+# -----------------------------------------------------------------------------
+# STEP 5 — Paired-End Alignment
+# Tool: BWA-MEM
+# Parameters: -M (mark secondary alignments), -B 4 (mismatch penalty)
+# -----------------------------------------------------------------------------
+bwa mem CC1.8/CC1.8_v2_pseudomolecule_cat.fasta \
+  -M -B 4 \
+  Clones/Paired_Filtered-YOURFILE_no_adaptor_TGACCA_L001_R1_001.fastq \
+  Clones/Paired_Filtered-YOURFILE_no_adaptor_TGACCA_L001_R2_001.fastq \
+  > Clones/BWA/Sam-CC1.8_Paired_Filtered_YOURFILE_no_adaptor_TGACCA_L001.sam
+
+
+# -----------------------------------------------------------------------------
+# STEP 6 — Alignment QC
+# Tool: Samtools
+# Converts SAM to BAM and generates alignment statistics.
+# Key metrics: mapped %, properly paired %, singletons %
+# -----------------------------------------------------------------------------
+samtools view -h -b -S \
+  Clones/BWA/Sam-CC1.8_Paired_Filtered_YOURFILE_no_adaptor_TGACCA_L001.sam \
+  -o Clones/BWA/raw-CC1.8_Paired_Filtered_YOURFILE_no_adaptor_TGACCA_L001.bam
+
+samtools flagstat -O tsv \
+  Clones/BWA/raw-CC1.8_Paired_Filtered_YOURFILE_no_adaptor_TGACCA_L001.bam \
+  > Clones/BWA/flagstat-raw-CC1.8_Paired_Filtered_YOURFILE_no_adaptor_TGACCA_L001.txt
+
+grep "mapped" \
+  Clones/BWA/flagstat-raw-CC1.8_Paired_Filtered_YOURFILE_no_adaptor_TGACCA_L001.txt \
+  > Clones/BWA/Flagstat/Mapped-flagstat-raw-CC1.8_Paired_Filtered_YOURFILE_no_adaptor_TGACCA_L001.txt
+
+grep "properly paired" \
+  Clones/BWA/flagstat-raw-CC1.8_Paired_Filtered_YOURFILE_no_adaptor_TGACCA_L001.txt \
+  > Clones/BWA/Flagstat/ProperlyPaired-flagstat-raw-CC1.8_Paired_Filtered_YOURFILE_no_adaptor_TGACCA_L001.txt
+
+grep "total" \
+  Clones/BWA/flagstat-raw-CC1.8_Paired_Filtered_YOURFILE_no_adaptor_TGACCA_L001.txt \
+  > Clones/BWA/Flagstat/TotalReads-flagstat-raw-CC1.8_Paired_Filtered_YOURFILE_no_adaptor_TGACCA_L001.txt
+
+
+# -----------------------------------------------------------------------------
+# STEP 7 — Remove Unmapped Reads
+# Tool: Samtools
+# Flag 0x2: retains only properly paired, mapped reads.
+# -----------------------------------------------------------------------------
+samtools view -h -b -S -f 0x2 \
+  Clones/BWA/Sam-CC1.8_Paired_Filtered_YOURFILE_no_adaptor_TGACCA_L001.sam \
+  -o Clones/BWA/Clean-Sam-CC1.8_Paired_Filtered_YOURFILE_no_adaptor_TGACCA_L001.bam
+
+
+# -----------------------------------------------------------------------------
+# STEP 8 — Sort BAM by Coordinate
+# Tool: Samtools
+# Required for downstream GATK processing.
+# -----------------------------------------------------------------------------
+samtools sort \
+  Clones/BWA/Clean-Sam-CC1.8_Paired_Filtered_YOURFILE_no_adaptor_TGACCA_L001.bam \
+  -o Clones/BWA/Sorted-Clean-Sam-CC1.8_Paired_Filtered_YOURFILE_no_adaptor_TGACCA_L001.bam
+
+
+# -----------------------------------------------------------------------------
+# STEP 9 — Add Read Groups
+# Tool: Picard (via GATK Docker — broadinstitute/gatk:latest)
+# Required metadata: library (RGLB), platform (RGPL), unit (RGPU), sample (RGSM)
+# -----------------------------------------------------------------------------
+sudo docker run -v ~/gatk:/gatk/my_data -it broadinstitute/gatk:latest \
+  gatk AddOrReplaceReadGroups \
+  -I /gatk/my_data/Clones/BWA/Sorted-Clean-Sam-CC1.8_Paired_Filtered_YOURFILE_no_adaptor_TGACCA_L001.bam \
+  -O /gatk/my_data/RG-Sorted-Clean-Sam-CC1.8_Paired_Filtered_YOURFILE_no_adaptor_TGACCA_L001.bam \
+  -RGLB lib1 \
+  -RGPL Illumina \
+  -RGPU unit1 \
+  -RGSM YOURFILE \
+  --VALIDATION_STRINGENCY SILENT
+
+
+# -----------------------------------------------------------------------------
+# STEP 10 — Merge BAM Files
+# Tool: Picard MergeSamFiles (via GATK Docker)
+# Combines all per-sample BAMs into a single multi-sample BAM for joint calling.
+# -----------------------------------------------------------------------------
+sudo docker run -v ~/gatk:/gatk/my_data -it broadinstitute/gatk:latest \
+  gatk MergeSamFiles \
+  -I /gatk/my_data/RG-Sorted-Clean-Sam-CC1.8_Paired_Filtered_YOURFILE2_no_adaptor_TGACCA_L001.bam \
+  -I /gatk/my_data/RG-Sorted-Clean-Sam-CC1.8_Paired_Filtered_YOURFILE_no_adaptor_TGACCA_L001.bam \
+  -O /gatk/my_data/YOURFILE+YOURFILE2_Merged.bam
+
+
+# -----------------------------------------------------------------------------
+# STEP 11 — Index Merged BAM and Reference
+# Tool: Samtools index and faidx
+# -----------------------------------------------------------------------------
+samtools index ~/gatk/YOURFILE+YOURFILE2_Merged.bam
+samtools faidx ~/gatk/CC1.8_v2_pseudomolecule_cat.fasta
+
+
+# -----------------------------------------------------------------------------
+# STEP 12 — Create Sequence Dictionary
+# Tool: Picard CreateSequenceDictionary (via GATK Docker)
+# Required by GATK for reference-based operations.
+# -----------------------------------------------------------------------------
+sudo docker run -v ~/gatk:/gatk/my_data -it broadinstitute/gatk:latest \
+  gatk CreateSequenceDictionary \
+  -R /gatk/my_data/CC1.8_v2_pseudomolecule_cat.fasta \
+  -O /gatk/my_data/CC1.8_v2_pseudomolecule_cat.dict
+
+
+# -----------------------------------------------------------------------------
+# STEP 13 — InDel Region Identification
+# Tool: GATK 3.8 RealignerTargetCreator (broadinstitute/gatk3:3.8-1)
+# NOTE: This tool was removed in GATK 4. Use the gatk3 Docker image.
+# Identifies genomic intervals likely to contain InDels for local realignment.
+# Filters applied: MAPQ=0, bad mate, non-primary alignments (~27.57% filtered)
+# -----------------------------------------------------------------------------
+sudo docker run -v ~/gatk:/gatk/my_data -it broadinstitute/gatk3:3.8-1 \
+  java -jar /usr/GenomeAnalysisTK.jar \
+  -T RealignerTargetCreator \
+  -R /gatk/my_data/CC1.8_v2_pseudomolecule_cat.fasta \
+  -I /gatk/my_data/YOURFILE+YOURFILE2_Merged.bam \
+  -o /gatk/my_data/YOURFILE+YOURFILE2_INDEL.intervals
+
+
+# -----------------------------------------------------------------------------
+# STEP 14 — Local InDel Realignment
+# Tool: GATK 3.8 IndelRealigner (broadinstitute/gatk3:3.8-1)
+# NOTE: This tool was removed in GATK 4. Use the gatk3 Docker image.
+# Corrects systematic misalignment artifacts around InDel sites.
+# -----------------------------------------------------------------------------
+sudo docker run -v ~/gatk:/gatk/my_data -it broadinstitute/gatk3:3.8-1 \
+  java -jar /usr/GenomeAnalysisTK.jar \
+  -T IndelRealigner \
+  -R /gatk/my_data/CC1.8_v2_pseudomolecule_cat.fasta \
+  -I /gatk/my_data/YOURFILE+YOURFILE2_Merged.bam \
+  -targetIntervals /gatk/my_data/YOURFILE+YOURFILE2_INDEL.intervals \
+  -o /gatk/my_data/Realign_YOURFILE+YOURFILE2_Merged.bam
+
+
+# -----------------------------------------------------------------------------
+# STEP 15 — Variant Calling (SNPs + InDels)
+# Tool: GATK 3.8 UnifiedGenotyper (broadinstitute/gatk3:3.8-1)
+# NOTE: This tool was removed in GATK 4. Use the gatk3 Docker image.
+# Mode: -glm BOTH calls SNPs and InDels simultaneously.
+# Output: raw VCF with all candidate variants.
+# -----------------------------------------------------------------------------
+sudo docker run -v ~/gatk:/gatk/my_data -it broadinstitute/gatk3:3.8-1 \
+  java -jar /usr/GenomeAnalysisTK.jar \
+  -T UnifiedGenotyper \
+  -I /gatk/my_data/Realign_YOURFILE+YOURFILE2_Merged.bam \
+  -R /gatk/my_data/CC1.8_v2_pseudomolecule_cat.fasta \
+  -o /gatk/my_data/YOURFILE+YOURFILE2_Calling.vcf \
+  -glm BOTH
+
+
+# -----------------------------------------------------------------------------
+# STEP 16 — Variant Filtering
+# Tools: BCFtools, VCFtools
+#
+# 16a. BCFtools quality filter — removes low-confidence variants based on:
+#   QD  < 2.0  : low quality-by-depth ratio
+#   FS  > 60.0 : strand bias (Fisher's exact test)
+#   MQ  < 40.0 : low mean mapping quality
+#   MQRankSum < -12.5 : mapping quality rank sum imbalance
+#   ReadPosRankSum < -8.0 : read position rank sum imbalance
+#
+# 16b. VCFtools depth filter — minimum genotype depth >= 10x
+#
+# 16c. VCFtools biallelic filter — retains only biallelic SNPs (no InDels)
+#
+# 16d. VCFtools position filter — extracts SNPs at Axiom 26K chip loci
+#      Recovered ~90.6% of the 25,456 chip SNPs from NGS data
+#
+# 16e. VCFtools MAF filter — retains SNPs with MAF >= 0.4
+#      Final matrix used for neighbor-joining phylogenetic analysis in TASSEL
+# -----------------------------------------------------------------------------
+
+# 16a — Quality filter (BCFtools)
+bcftools filter \
+  -Oz --threads 8 \
+  -e 'INFO/QD < 2.0 | INFO/FS > 60.0 | INFO/MQ < 40.0 | INFO/MQRankSum < -12.5 | INFO/ReadPosRankSum < -8.0' \
+  -o gatk/my_data/YOURFILE+YOURFILE2_Calling_filtGATK.vcf.gz \
+  gatk/my_data/YOURFILE+YOURFILE2_Calling.vcf
+
+# 16b — Minimum depth filter (VCFtools)
+vcftools --gzvcf gatk/my_data/YOURFILE+YOURFILE2_Calling_filtGATK.vcf.gz \
+  --minDP 10 \
+  --out gatk/my_data/YOURFILE+YOURFILE2_DP10 \
+  --recode-INFO-all \
+  --recode
+
+# 16c — Biallelic SNP filter (VCFtools)
+vcftools --vcf gatk/my_data/YOURFILE+YOURFILE2_DP10.recode.vcf \
+  --remove-indels \
+  --min-alleles 2 \
+  --max-alleles 2 \
+  --out gatk/my_data/2alleles_noIndels \
+  --recode-INFO-all \
+  --recode
+
+# 16d — Axiom 26K position extraction (VCFtools)
+vcftools --vcf gatk/my_data/2alleles_noIndels.recode.vcf \
+  --positions gatk/Affy_Positions_CC1.8_Filter \
+  --out gatk/my_data/YOURFILE+YOURFILE2_Affy_test2 \
+  --recode-INFO-all \
+  --recode
